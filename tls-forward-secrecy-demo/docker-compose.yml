@@ -1,0 +1,9 @@
+services:
+  tls-lab:
+    build: .
+    container_name: tls-forward-secrecy-demo
+    working_dir: /workspace
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    command: sleep infinity

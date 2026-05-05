@@ -1,0 +1,6 @@
+pcaps/
+.pytest_cache/
+__pycache__/
+*.pyc
+certs/server.crt
+certs/server.key
