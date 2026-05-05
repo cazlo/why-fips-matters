@@ -29,6 +29,7 @@ For a security product, even a “hard to exploit” TLS weakness matters more t
 
 | Crypto / feature | Example vuln / exploit | Year disclosed | Affected SSL/TLS versions | What the exploit did | Practical attacker impact | General exploit difficulty |
 |---|---:|---:|---|---|---|---|
+| **CBC mode in TLS 1.0 (predictable IVs)** | BEAST | 2011 | TLS 1.0 with CBC-mode cipher suites | Browser-side attacker with JavaScript execution exploits CBC IV predictability in TLS 1.0 to recover chosen plaintext byte-by-byte. | Can recover session cookies, enabling session hijack and account takeover. Its primary historical significance is the industry response: many servers switched to RC4 as a workaround, which later became the RC4 NOMORE problem. Mitigating one CBC weakness by enabling a broken stream cipher was a direct example of how legacy-compatibility decisions compound. | Hard in practice. Requires attacker-controlled JavaScript in the victim browser, a MITM network position, and many requests. Primarily significant for historical context and as the origin of the RC4 migration that created a worse long-term vulnerability. |
 | **CBC mode in TLS/DTLS** | Lucky13 | 2013 | TLS/DTLS with CBC-mode cipher suites, mostly TLS 1.0–1.2 era | Timing/padding-oracle style plaintext recovery against CBC-mode TLS/DTLS. | Can expose protected plaintext such as cookies, bearer tokens, credentials, request bodies, or customer telemetry if the attacker can observe and influence enough traffic. | Generally hard. Requires MITM position, many carefully measured requests, low-noise timing conditions, and vulnerable implementation behavior. Still important because it represents a fragile class of protocol design. |
 | **CBC mode in SSL 3.0 + downgrade fallback** | POODLE | 2014 | SSL 3.0 directly; TLS clients/servers indirectly if attacker can force fallback | Network attacker can force downgrade to SSL 3.0 and calculate plaintext of secure connections. | Can recover secrets such as session cookies, enabling account/session takeover. For SaaS consoles, that could mean access to dashboards, admin workflows, or customer data. | Moderate in the right conditions. Requires MITM position and ability to trigger downgrade/fallback and repeated victim requests, historically practical on hostile Wi-Fi or controlled networks. |
 | **RC4 stream cipher** | RC4 NOMORE | 2015 | Any SSL/TLS version that negotiates RC4 | Practical cookie/plaintext recovery from repeated RC4-encrypted sessions. | Can recover repeatedly transmitted secrets such as cookies. That can enable session hijack, impersonation, and access to protected SaaS data. | Moderate to hard. Requires large volumes of repeated encrypted requests and attacker ability to induce traffic, but researchers demonstrated practical cookie recovery against real devices. |
@@ -42,6 +43,7 @@ For a security product, even a “hard to exploit” TLS weakness matters more t
 
 References:
 
+- BEAST attack: <https://vnhacker.blogspot.com/2011/09/beast.html>
 - Lucky13: <https://www.isg.rhul.ac.uk/tls/Lucky13.html>
 - Google POODLE disclosure: <https://security.googleblog.com/2014/10/this-poodle-bites-exploiting-ssl-30.html>
 - RC4 NOMORE: <https://www.rc4nomore.com/>
@@ -55,14 +57,17 @@ References:
 
 ## Why TLS 1.3 is different
 
-TLS 1.3 effectively validates the “narrow the crypto menu” approach. RFC 8446 pruned legacy symmetric algorithms so that the remaining algorithms are AEAD-based, removed static RSA and static Diffie-Hellman key exchange, and made public-key key exchange forward-secret by default. TLS 1.3 cipher suites are also defined differently from TLS 1.2 cipher suites and cannot be used interchangeably.
+TLS 1.3 effectively validates the "narrow the crypto menu" approach. RFC 8446 pruned legacy symmetric algorithms so that the remaining algorithms are AEAD-based, removed static RSA and static Diffie-Hellman key exchange, and made forward secrecy mandatory for all public-key key exchanges — not optional, and not dependent on cipher-suite selection. TLS 1.3 cipher suites are also defined differently from TLS 1.2 cipher suites and cannot be used interchangeably.
 
 The one major TLS 1.3 caveat is **0-RTT**. RFC 8446 explicitly warns that 0-RTT data is not forward secret and has no guarantee of non-replay between connections. For most SaaS applications, TLS 1.3 should be enabled, but **0-RTT should remain disabled unless there is a specific reviewed use case**.
+
+**Looking ahead: post-quantum TLS.** NIST finalized ML-KEM (FIPS 203, based on CRYSTALS-Kyber) in August 2024. Browsers and TLS stacks are deploying hybrid post-quantum key exchange (e.g., X25519MLKEM768) to protect against future "harvest now, decrypt later" threats. For a security SaaS, this is worth tracking: the question is not whether to support hybrid PQC but when to require it. For now, the recommended profile above is the correct baseline; the post-quantum transition adds a new key-exchange dimension without changing the cipher or protocol-version recommendations here.
 
 References:
 
 - RFC 8446, TLS 1.3: <https://www.rfc-editor.org/rfc/rfc8446.html>
 - RFC 8446, 0-RTT warning: <https://www.rfc-editor.org/rfc/rfc8446.html#section-2.3>
+- NIST FIPS 203, ML-KEM: <https://csrc.nist.gov/pubs/fips/203/final>
 
 ## Recommended policy
 
@@ -78,10 +83,10 @@ TLS 1.3 allowlist:
 - TLS_AES_256_GCM_SHA384
 
 TLS 1.2 allowlist:
-- ECDHE_RSA_WITH_AES_128_GCM_SHA256
-- ECDHE_RSA_WITH_AES_256_GCM_SHA384
-- ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-- ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+- TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+- TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+- TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+- TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
 ```
 
 Explicitly disable:
@@ -752,7 +757,7 @@ OpenSSL-style negative selectors vary by version, but the rough conceptual equiv
 ```
 
 OpenSSL’s cipher tooling exists specifically to convert textual cipher lists into ordered cipher preferences, and OpenSSL versions differ in naming/policy behavior, so verify the resulting effective list with `openssl ciphers -V`.
-
+**Note:** This OpenSSL string is a denylist for scanner verification and compliance checking only. It is not the recommended server configuration approach. For the actual server implementation, use an explicit allowlist as described in Appendix D — default-deny with a narrow explicit allowlist is safer than maintaining an exhaustive denylist.
 Reference:
 
 - OpenSSL `ciphers` command: <https://docs.openssl.org/3.3/man1/openssl-ciphers/>
@@ -781,3 +786,129 @@ Scanner gate in CI/CD.
 Runtime observability for negotiated protocol/cipher.
 Exception process for anything outside the allowlist.
 ```
+
+---
+
+# Appendix E — Platforms that do not support TLS 1.3
+
+The "TLS 1.2 for interoperability" exception is only meaningful when you can name the actual client environments that require it. The table below maps platform/runtime to TLS 1.3 support so that interoperability exceptions can be grounded in concrete facts rather than vague backward-compatibility anxiety.
+
+## Windows / SChannel
+
+| Platform | TLS 1.3 support | Notes |
+|---|---|---|
+| Windows 7 | None | EOL January 2020; SChannel never received TLS 1.3 |
+| Windows 8 / 8.1 | None | EOL January 2023; SChannel never received TLS 1.3 |
+| Windows Server 2016 | None | SChannel TLS 1.3 support first appeared in Windows Server 2022 |
+| Windows 10 < 20H2 (< Oct 2020) | Experimental / opt-in | Available as an optional preview feature; not enabled by default |
+| Windows 10 ≥ 20H2 | Supported | Enabled by default; Windows 10 itself reached EOL October 2025 |
+| Windows Server 2019 | Supported (late update) | Added via cumulative update; verify it is enabled in SChannel config |
+| Windows 11 / Server 2022+ | Fully supported | TLS 1.3 on by default |
+
+If a customer is running Windows Server 2016 (extended support ended October 2022) or an unpatched Windows Server 2019, TLS 1.2 is the floor. Customers in that category should be considered a named exception and tracked toward remediation, not a silent product assumption.
+
+References:
+
+- Microsoft SChannel TLS 1.3 documentation: <https://learn.microsoft.com/en-us/windows/win32/secauthn/tls-cipher-suites-in-windows-server-2022>
+- Windows Server 2016 EOL: <https://learn.microsoft.com/en-us/lifecycle/products/windows-server-2016>
+
+## Linux / OpenSSL
+
+TLS 1.3 in OpenSSL requires **OpenSSL 1.1.1** or later (released September 2018). Distributions that shipped OpenSSL 1.0.x or 1.1.0 do not have TLS 1.3 in their default system library.
+
+| Distribution | Default OpenSSL | TLS 1.3 in default stack | EOL |
+|---|---|---|---|
+| RHEL / CentOS 6 | 1.0.1 | No | November 2020 |
+| RHEL / CentOS 7 | 1.0.2k | No | June 2024 |
+| RHEL / CentOS 8 | 1.1.1 | Yes | May 2029 (RHEL 8) |
+| Ubuntu 16.04 LTS | 1.0.2g | No | April 2021 |
+| Ubuntu 18.04 LTS | 1.1.1 | Yes | April 2028 (ESM) |
+| Debian 9 (Stretch) | 1.1.0 | No (1.1.0 ≠ 1.1.1) | June 2022 |
+| Debian 10 (Buster) | 1.1.1 | Yes | June 2024 (LTS) |
+
+Note the Debian 9 / OpenSSL 1.1.0 case specifically: 1.1.0 and 1.1.1 are different release branches. OpenSSL 1.1.0 does not include TLS 1.3; 1.1.1 does.
+
+For agents, collectors, or integrations shipping on customer Linux hosts, the distribution and OpenSSL version determine whether TLS 1.3 is even available. A customer still running RHEL 7 hosts as of 2026 requires TLS 1.2 from the agent perspective; that is a supportable exception, but it should be documented as such.
+
+References:
+
+- OpenSSL 1.1.1 release announcement: <https://www.openssl.org/news/openssl-1.1.1-notes.html>
+- OpenSSL 1.1.1 EOL (September 2023): <https://www.openssl.org/blog/blog/2023/09/11/eol111/>
+
+## Java / JSSE
+
+| Java version | TLS 1.3 support | Notes |
+|---|---|---|
+| Java 7 and earlier | None | EOL; TLS 1.3 never added |
+| Java 8 < 8u261 | None | 8u261 (July 2020) added TLS 1.3 to JSSE |
+| Java 8 ≥ 8u261 | Supported | TLS 1.3 available; not always the default protocol priority |
+| Java 11+ | Fully supported | TLS 1.3 on by default |
+
+Java-based SaaS integrations, API clients, or on-premise agents built on old Java 8 runtimes without 8u261+ are a real and common TLS 1.2 dependency. The fix is runtime upgrade, not permanent TLS 1.2 accommodation.
+
+Reference:
+
+- JDK 8u261 release notes: <https://www.oracle.com/java/technologies/javase/8u261-relnotes.html>
+
+## .NET / SChannel
+
+.NET Framework delegates TLS to the underlying Windows SChannel. The TLS 1.3 availability constraints from the Windows table above therefore apply directly.
+
+| Runtime | TLS 1.3 support | Notes |
+|---|---|---|
+| .NET Framework ≤ 4.7.x | No TLS 1.3 API | Depends on SChannel; also lacks explicit TLS 1.3 negotiation in the API |
+| .NET Framework 4.8 | Via SChannel | Requires Windows that supports TLS 1.3 in SChannel (Win 11 / Server 2022) |
+| .NET Core 3.1 / .NET 5+ | Via SChannel (Windows) or OpenSSL (Linux/macOS) | TLS 1.3 available when OS stack supports it |
+
+Reference:
+
+- Microsoft TLS best practices for .NET: <https://learn.microsoft.com/en-us/dotnet/framework/network-programming/tls>
+
+## Mobile
+
+| Platform | TLS 1.3 support | Notes |
+|---|---|---|
+| Android < 10 (API 29) | None in default network stack | BoringSSL TLS 1.3 support landed in Android 10 (September 2019) |
+| Android ≥ 10 | Supported | Enabled by default via BoringSSL |
+| iOS < 13 / macOS < 10.15 | Partial / unreliable | Apple added TLS 1.3 in iOS 13 / macOS Catalina (2019) |
+| iOS ≥ 13 / macOS ≥ 10.15 | Supported | |
+
+For SaaS products with mobile clients, Android 9 and below or iOS 12 and below require TLS 1.2. Both of those Android and iOS versions are well past end-of-support, but installed-base devices do not always update.
+
+References:
+
+- Android 10 release notes: <https://developer.android.com/about/versions/10/highlights>
+- Apple TLS deprecation: <https://developer.apple.com/news/?id=07082019a>
+
+## Enterprise TLS inspection appliances
+
+This is the most operationally relevant TLS 1.2 pressure point for SaaS. Many enterprise customers route traffic through TLS inspection proxies. If the proxy cannot negotiate TLS 1.3 with the upstream SaaS endpoint, it will either:
+
+- fail the connection entirely,
+- downgrade to TLS 1.2 silently, or
+- break certificate pinning or other client security controls.
+
+Older appliance generations with limited TLS 1.3 proxy support include:
+
+- Palo Alto NGFW on older PAN-OS firmware (TLS 1.3 SSL/TLS decryption support was added in PAN-OS 10.x; verify the specific version against Palo Alto release notes for your appliance model)
+- Older Blue Coat / Broadcom ProxySG firmware
+- F5 BIG-IP versions before 15.1 (TLS 1.3 added in 15.1, released October 2019)
+- Some Cisco ASA firmware versions, depending on configuration and release
+
+For SaaS products, this is a reason to **keep TLS 1.2 in the allowed profile** rather than a reason to relax cipher selection. The correct response is TLS 1.2 with a narrow AEAD + ECDHE profile, not CBC or static-RSA accommodations.
+
+## Summary: what this means for TLS 1.2 exceptions
+
+A TLS 1.2 exception is defensible when:
+
+- You can name the specific platform or runtime (RHEL 7, Java 8 pre-261, Windows Server 2016, Android 9).
+- The platform has a documented remediation path (OS upgrade, runtime update, appliance firmware).
+- The exception is time-bounded or tracked toward resolution.
+
+A TLS 1.2 exception is not defensible when it is:
+
+- "We don't know who still needs it."
+- "It's safer to leave it on."
+- "Some customers might have old things."
+
+The TLS 1.2 profile should be **narrow** (AEAD + ECDHE only), not broadly permissive. The platforms listed above that require TLS 1.2 are all capable of negotiating `TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256` or `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384`. There is no need to permit CBC, static RSA, or export suites to support any of them.
